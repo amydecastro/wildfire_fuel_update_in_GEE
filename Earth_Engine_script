@@ -1,0 +1,456 @@
+Map.setCenter(-106.2387,40.20294); // ignition 
+
+// Filter the USFS Landscape Change data by the extent and 
+// to the years 2019 and 2020
+var veg_2019 = lulc
+.filterBounds(medium_extent)
+.filter(ee.Filter.eq('year', 2019))
+.first();
+print(veg_2019);
+
+var veg_2020 = lulc
+.filterBounds(medium_extent)
+.filter(ee.Filter.eq('year', 2020))
+.first();
+//print('veg_2020', veg_2020);
+
+Map.addLayer(veg_2019.select('Land_Cover'), {}, 'Land Cover');
+
+
+// Filter the resulting data to just the land cover band
+var lc_2019 = veg_2019.select(
+  ['Land_Cover'])
+  .clip(medium_extent);
+//print('lc_2019', lc_2019);
+
+var lc_2020 = veg_2020.select(
+  ['Land_Cover'])
+  .clip(medium_extent);
+
+// Calculate the difference between the two years 
+var lc_diff = lc_2020.subtract(lc_2019);
+print('land cover difference', lc_diff);
+Map.addLayer(
+  lc_diff, 
+  classVis,
+  "land cover difference, 2019-2020");
+
+// Filter Sentinel-1 data by year, extent, instrument mode, and orbit pass
+var s12 = S1
+.filterBounds(medium_extent)
+.filterDate('2019-01-01','2019-12-31')
+.filter(ee.Filter.eq('instrumentMode', 'IW'));
+print('s12', s12);
+
+var s1_2019_IW_asc = S1
+.filterBounds(medium_extent)
+.filterDate('2019-01-01','2019-12-31')
+.filter(ee.Filter.eq('instrumentMode', 'IW'))
+.filter(ee.Filter.eq('orbitProperties_pass', 'ASCENDING'));
+
+var s1_2019_IW_des = S1
+.filterBounds(medium_extent)
+.filterDate('2019-01-01','2019-12-31')
+.filter(ee.Filter.eq('instrumentMode', 'IW'))
+.filter(ee.Filter.eq('orbitProperties_pass', 'DESCENDING'));
+
+var s1_2020_IW_asc = S1
+.filterBounds(medium_extent)
+.filterDate('2020-01-01','2020-12-31')
+.filter(ee.Filter.eq('instrumentMode', 'IW'))
+.filter(ee.Filter.eq('orbitProperties_pass', 'ASCENDING'));
+
+var s1_2020_IW_des = S1
+.filterBounds(medium_extent)
+.filterDate('2020-01-01','2020-12-31')
+.filter(ee.Filter.eq('instrumentMode', 'IW'))
+.filter(ee.Filter.eq('orbitProperties_pass', 'DESCENDING'));
+
+//Filter the resulting datasets by month
+var s1_july_IW_asc = s1_2019_IW_asc.filter(
+  ee.Filter.calendarRange(7, 7, 'month') //filter to July 2019
+  );
+
+var s1_july_IW_des = s1_2019_IW_des.filter(
+  ee.Filter.calendarRange(7, 7, 'month') //filter to July 2019
+  );
+  
+var s1_sept_IW_asc = s1_2020_IW_asc.filter(
+  ee.Filter.calendarRange(9, 9, 'month') //filter to September 2020
+  );
+
+var s1_sept_IW_des = s1_2020_IW_des.filter(
+  ee.Filter.calendarRange(9, 9, 'month') //filter to September 2020
+  );
+
+//Take the median band values for each month
+var s1_july_asc_med = s1_july_IW_asc.median()
+//print('s1_july_asc_med', s1_july_asc_med);
+
+var s1_july_des_med = s1_july_IW_des.median();
+//print('s1_july_des_med', s1_july_des_med);
+
+var s1_sept_asc_med = s1_sept_IW_asc.median();
+//print('s1_sept_asc_med', s1_sept_asc_med);
+
+var s1_sept_des_med = s1_sept_IW_des.median();
+//print('s1_sept_des_med', s1_sept_des_med);
+
+// Take a look at the image for July (ascending)
+Map.addLayer(s1_july_asc_med, {min: -12, max: -4}, 's1_july_asc_med');
+
+//Create dataset images for each month and orbit pass with just the 
+//VV and VH bands (not the angle band), and rename the bands
+var s1_july_asc_dataset = s1_july_asc_med.select(
+  ['VV', 'VH'], ['VV_asc', 'VH_asc'])
+  .clip(medium_extent);
+//print('s1_july_asc_dataset', s1_july_asc_dataset);
+
+var s1_july_des_dataset = s1_july_des_med.select(
+  ['VV', 'VH'], ['VV_des', 'VH_des'])
+  .clip(medium_extent);
+//print('s1_july_des_dataset', s1_july_des_dataset);
+
+var s1_sept_asc_dataset = s1_sept_asc_med.select(
+  ['VV', 'VH'], ['VV_asc', 'VH_asc'])
+  .clip(medium_extent);
+//print('s1_sept_asc_dataset', s1_sept_asc_dataset);
+
+var s1_sept_des_dataset = s1_sept_des_med.select(
+  ['VV', 'VH'], ['VV_des', 'VH_des'])
+  .clip(medium_extent);
+//print('s1_sept_des_dataset', s1_sept_des_dataset);
+
+//Combine the resulting datasets into one dataset for each month
+var s1_july_dataset = s1_july_asc_dataset.addBands(s1_july_des_dataset);
+//print('s1_july_dataset', s1_july_dataset);
+
+var s1_sept_dataset = s1_sept_asc_dataset.addBands(s1_sept_des_dataset);
+//print('s1_sept_dataset', s1_sept_dataset);
+
+
+
+//Define a function to mask clouds in the Sentinel2 imagery
+function maskS2clouds(image) {
+  
+  var qa = image.select('QA60'); //Cloud mask band based on B9 (water vapor) and B10 (cirrus)
+  
+  //Bits 10 and 11 are clouds and cirrus, respectively.
+  var cloudBitMask = 1 << 10;
+  var cirrusBitMask = 1 << 11;
+  
+  //Both flags should be set to zero, indicating clear conditions.
+  //If not 0, pixel is likely cloudy and will be masked out
+  var mask = qa.bitwiseAnd(cloudBitMask).eq(0)
+      .and(qa.bitwiseAnd(cirrusBitMask).eq(0));
+  
+  //Return our cloud-masked image
+  return image.updateMask(mask);
+}
+
+// Define vegetation indices
+// Chlorophyll Index Red-edge (ChIrededge)
+// Source: https://custom-scripts.sentinel-hub.com/custom-scripts/sentinel-2/indexdb/
+function addChRE(image) {
+  
+  var b5 = image.select('B5')
+  var b7 = image.select('B7')
+  var diff = b7.divide(b5)
+  var chre = diff.pow(-1)
+  
+  return image.addBands(chre.rename("ChRE"))
+  .set('system:time_start', image.get('system:time_start'));
+}
+
+function addswir_over_nir(image) {
+  
+  var b11 = image.select('B11')
+  var b8 = image.select('B8')
+  var swir_over_nir = b11.divide(b8)
+  
+  
+  return image.addBands(swir_over_nir.rename("swir_over_nir"))
+  .set('system:time_start', image.get('system:time_start'));
+}
+
+function addTCbri(image) {
+var TCbri = image.expression(
+    '0.3037*B2 + 0.2793*B3 + 0.4743*B4 + 0.5585*B8 + 0.5082*B10 + 0.1863*B12', {
+      'B2': image.select('B2'),
+      'B3': image.select('B3'),
+      'B4': image.select('B4'),
+      'B8': image.select('B8'),
+      'B10': image.select('B10'),
+      'B12': image.select('B12'),
+});
+  return image.addBands(TCbri.rename("TCbri"))
+  .set('system:time_start', image.get('system:time_start'));
+}
+
+function addTCgre(image) {
+var TCgre = image.expression(
+    '-0.2848*B2 - 0.2435*B3 - 0.5436*B4 + 0.7243*B8 + 0.0840*B11 - 0.1800*B12', {
+      'B2': image.select('B2'),
+      'B3': image.select('B3'),
+      'B4': image.select('B4'),
+      'B8': image.select('B8'),
+      'B11': image.select('B11'),
+      'B12': image.select('B12'),
+});
+  return image.addBands(TCgre.rename("TCgre"))
+  .set('system:time_start', image.get('system:time_start'));
+}
+
+function addTCwet(image) {
+var TCwet = image.expression(
+    '0.1509*B2 + 0.1973*B3 + 0.3279*B4 + 0.3406*B8 - 0.7112*B11 - 0.4572*B12', {
+      'B2': image.select('B2'),
+      'B3': image.select('B3'),
+      'B4': image.select('B4'),
+      'B8': image.select('B8'),
+      'B11': image.select('B11'),
+      'B12': image.select('B12'),
+});
+  return image.addBands(TCwet.rename("TCwet"))
+  .set('system:time_start', image.get('system:time_start'));
+}
+
+function add54(image) {
+  
+  var b5 = image.select('B5')
+  var b4 = image.select('B4')
+  var B5B4 = b5.divide(b4)
+  
+  
+  return image.addBands(B5B4.rename("B5B4"))
+  .set('system:time_start', image.get('system:time_start'));
+}
+
+// Filter Sentinel-2 data to 2019 an 2020 and add the vegetation indices
+var s2msi_filter_2019 = s2msi
+.filterBounds(medium_extent) //Filter to domain extent
+.filterDate('2019-01-01', '2019-12-31') //Search for 2019 images
+.map(maskS2clouds) //Apply the cloud mask to each image
+.map(addChRE) //Adds chlorophyll red-edge index to each image
+.map(addTCbri) //Adds tassel cap brightness to each image
+.map(addTCgre) //Adds tassel cap greenness to each image
+.map(addTCwet) //Adds tassel cap wetness to each image
+.map(addswir_over_nir) //Adds swir1 over nir ratio to each image
+.map(add54); //Adds B5/B4 to each image
+
+var s2msi_filter_2020 = s2msi
+.filterBounds(medium_extent) //Filter to domain extent
+.filterDate('2020-01-01', '2020-12-31') //Search for 2020 images
+.map(maskS2clouds) //Apply the cloud mask to each image
+.map(addChRE) //Adds chlorophyll red-edge index to each image
+.map(addTCbri) //Adds tassel cap brightness to each image
+.map(addTCgre) //Adds tassel cap greenness to each image
+.map(addTCwet) //Adds tassel cap wetness to each image
+.map(addswir_over_nir) //Adds swir1 over nir ratio to each image
+.map(add54); //Adds B5/B4 to each image
+print('s2msi_filter_2020', s2msi_filter_2020)
+
+// Filter the resulting datasets to July 2019 and September 2020
+var s2msi_july = s2msi_filter_2019.filter(
+  ee.Filter.calendarRange(7,7, 'month') // filter to July
+); 
+print('s2msi_july', s2msi_july);
+
+var s2msi_sept = s2msi_filter_2020.filter(
+  ee.Filter.calendarRange(9,9, 'month') //filter to September
+); 
+
+//Create median composites for July 2019 and Sept 2020
+var s2msi_median = s2msi_sept.median();
+var s2msi_median_july = s2msi_july.median();
+
+// Subset the Sentinel-2 bands and indices to the data we will use for training 
+// and validation
+var sept_s2msi_dataset = s2msi_median.select(
+  ['B2', 'B3', 'B4', 'B5', 'B6', 'B7', 
+  'B8A', 'B8', 'B11', 'B12', 'ChRE', 'TCbri',
+  'TCgre', 'TCwet', 'swir_over_nir', 'B5B4'])
+.clip(medium_extent) // Clip the Image to domain extent
+
+var july_s2msi_dataset = s2msi_median_july.select(
+  ['B2', 'B3', 'B4', 'B5', 'B6', 'B7', 
+  'B8A', 'B8', 'B11', 'B12', 'ChRE', 'TCbri',
+  'TCgre', 'TCwet', 'swir_over_nir', 'B5B4'])
+.clip(medium_extent) // Clip the Image to domain extent
+print('july_s2msi_dataset', july_s2msi_dataset);
+
+// Take a look at the image for July
+Map.addLayer(s2msi_median_july, cireVis, "CIR Cloud-masked Median Composite (July 2019)");
+
+// Combine the USFS land cover, Sentinel-1 and Sentinel-2 datasets
+var july_s1_s2_dataset = s1_july_dataset.addBands(july_s2msi_dataset)
+.addBands(lc_2019);
+print('july_s1_s2_dataset', july_s1_s2_dataset);
+
+var sept_s1_s2_dataset = s1_sept_dataset.addBands(sept_s2msi_dataset)
+.addBands(lc_2020);
+//print('sept_s1_s2_dataset', sept_s1_s2_dataset);
+
+// Make a list of the band names
+var july_band_names = july_s1_s2_dataset.bandNames();
+//print('july_s1_s2_dataset', july_s1_s2_dataset);
+var sept_band_names = sept_s1_s2_dataset.bandNames();
+
+
+//START MODELING////////////////////////////////////
+// merge polygons to create training data set
+var training = very_light_poly.merge(light_poly)
+                              .merge(moderate_poly)
+                              .merge(severe_poly)
+                              .merge(very_severe_poly)
+                              .merge(other_poly2);
+print('training dataset (complete)', training);
+
+// //Add a random column (by default named 'random')
+var random = training.randomColumn();
+// //Split in a training (70%) and validation (30%)
+// //NOTE: this does not split evenly by class...
+// //...We would likely want to do a weighted sampling method but this is fine for now.
+var train = random.filter(ee.Filter.gt('random',0.3));
+var test = random.filter(ee.Filter.lte('random',0.3));
+print('Training', train);//print the new feature class for training
+print('Validation', test);//print the new feature class for testing
+
+//Sample the training data by class
+var training = july_s1_s2_dataset.sampleRegions({ //Sample the "s2msi_dataset" where we selected our bands
+  collection: train, //training subset
+  properties: ['TM'], 
+  scale: 20, 
+  tileScale: 16 //Tile-scale parameter increases available memory
+});
+
+//Sample the validation data by class
+var testing = july_s1_s2_dataset.sampleRegions({
+  collection: test,
+  properties: ['TM'],
+  scale: 20,
+  tileScale: 16
+});
+
+// Initiate a Random Forest classifier and train it
+var classifier = ee.Classifier.smileRandomForest(100) 
+.train({
+  features: training, //Sampled training data
+  classProperty: 'TM', // Training label 
+  inputProperties: july_band_names // Selected bands from time-series
+});
+
+// Classify the image 
+var july_classified = july_s1_s2_dataset.classify(classifier);
+
+// Histogram of July 2019 classification
+// var chart =
+//     ui.Chart.image.histogram({image: july_classified, region: medium_extent, scale: 100, maxPixels:20000000})
+//         .setOptions({
+//           title: 'Tree Mortality Classification July 2019',
+//           hAxis: {
+//             title: 'Classification Difference',
+//             titleTextStyle: {italic: false, bold: true},
+//           },
+//           vAxis:
+//               {title: 'Count', titleTextStyle: {italic: false, bold: true}},
+//           colors: ['cf513e', '1d6b99', 'f0af07']
+//         });
+// print(chart);
+
+// Confusion matrix representing resubstitution (training) accuracy.
+var trainAccuracy = classifier.confusionMatrix();
+print('Resubstitution error matrix: ', trainAccuracy);
+print('Training overall accuracy: ', trainAccuracy.accuracy());
+
+// Classify the validation data
+var validated = testing.classify(classifier);
+
+// Confusion matrix representing expected accuracy.
+var testAccuracy = validated.errorMatrix('TM', 'classification');
+print('Validation (testing) error matrix: ', testAccuracy);
+print('Validation (testing) overall accuracy: ', testAccuracy.accuracy());
+
+var explain = classifier.explain();
+print('explain', explain);
+
+//Add the classified image to the map 
+Map.addLayer(
+  july_classified, 
+  classVis,
+  "July 2019 Classified (Random Forest)");
+
+// Classify the sept 2020 composite image
+var sept_classified = sept_s1_s2_dataset.select(sept_band_names).classify(classifier);
+print('sept_classified', sept_classified);
+
+// Add the classified image to the map
+Map.addLayer(
+  sept_classified, 
+  classVis,
+  "Sept 2020 Classified (Random Forest)");
+
+// Histogram of September 2020 classification
+// var chart =
+//     ui.Chart.image.histogram({image: sept_classified, region: medium_extent, scale: 100, maxPixels:20000000})
+//         .setOptions({
+//           title: 'Tree Mortality Classification Sept 2020',
+//           hAxis: {
+//             title: 'Classification Difference',
+//             titleTextStyle: {italic: false, bold: true},
+//           },
+//           vAxis:
+//               {title: 'Count', titleTextStyle: {italic: false, bold: true}},
+//           colors: ['cf513e', '1d6b99', 'f0af07']
+//         });
+// print(chart);
+  
+// Determine the difference between the two images
+var diff = sept_classified.subtract(july_classified);
+print('classified image difference', diff);
+Map.addLayer(
+  diff, 
+  classVis,
+  "difference between two classified images");
+  
+// Difference chart, printed in the console
+// var chart =
+//     ui.Chart.image.histogram({image: diff, region: medium_extent, scale: 100, maxPixels:20000000})
+//         .setOptions({
+//           title: 'Change in Classification, 7/2019 - 9/2020',
+//           hAxis: {
+//             title: 'Classification Difference',
+//             titleTextStyle: {italic: false, bold: true},
+//           },
+//           vAxis:
+//               {title: 'Count', titleTextStyle: {italic: false, bold: true}},
+//           colors: ['cf513e', '1d6b99', 'f0af07']
+//         });
+// print(chart);
+
+
+
+//Export the classified July image, specifying scale and region.
+Export.image.toDrive({
+  image: july_classified,
+  description: 'july_classified_ET20pct',
+  scale: 20,
+  folder: 'ee',
+  maxPixels: 400000000000, 
+  region: medium_extent
+});
+
+//Export the classified September image, specifying scale and region.
+Export.image.toDrive({
+  image: sept_classified,
+  description: 'sept_classified_ET20pct',
+  scale: 20,
+  folder: 'ee',
+  maxPixels: 400000000000,
+  region: medium_extent
+});
+
+
+
+
+
